@@ -44,7 +44,7 @@ ensure_env_file_exists()
 # Load environment variables from .env file
 load_dotenv(override=True)
 
-from fastapi import FastAPI, Request, Form, HTTPException, Depends
+from fastapi import FastAPI, Request, Form, HTTPException, Depends, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -89,45 +89,94 @@ class APIResponse(BaseModel):
     output_file: str
     generation_time: float
 
-# OpenAI-compatible API endpoint
+# OpenAI voice mapping
+OPENAI_VOICE_MAP = {
+    "alloy": "tara",
+    "echo": "leo",
+    "shimmer": "zoe",
+    "nova": "mia",
+    "onyx": "dan",
+    "fable": "jess"
+}
+
+def map_openai_voice(voice: str) -> str:
+    return OPENAI_VOICE_MAP.get(voice, DEFAULT_VOICE)
+
+class OpenAIAdapter:
+    def __init__(self, core_engine):
+        self.engine = core_engine  # Existing TTS technology
+        
+    def generate(self, openai_params):
+        # Map OpenAI params to internal format
+        internal_voice = map_openai_voice(openai_params.get("voice", DEFAULT_VOICE))
+        speed = openai_params.get("speed", 1.0)
+        text = openai_params.get("input", "")
+        
+        # Generate speech using the core engine
+        # We do not support streaming here, generate full audio first
+        # Output to a temporary WAV file and read bytes to return
+        import tempfile
+        import os
+        from pydub import AudioSegment
+        import io
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav_file:
+            wav_path = tmp_wav_file.name
+        
+        # Call the existing generate_speech_from_api with mapped voice and speed
+        # Note: speed parameter is not currently used in generate_speech_from_api, so we may ignore or extend later
+        self.engine.generate_speech_from_api(
+            prompt=text,
+            voice=internal_voice,
+            output_file=wav_path,
+            use_batching=True,
+            max_batch_chars=1000
+        )
+        
+        # If requested format is mp3, transcode wav to mp3 in memory
+        if openai_params.get("response_format") == "mp3":
+            audio = AudioSegment.from_wav(wav_path)
+            mp3_io = io.BytesIO()
+            audio.export(mp3_io, format="mp3")
+            audio_data = mp3_io.getvalue()
+            mp3_io.close()
+            os.remove(wav_path)
+            return audio_data
+        else:
+            # Return wav bytes directly
+            with open(wav_path, "rb") as f:
+                audio_data = f.read()
+            os.remove(wav_path)
+            return audio_data
+
+class OpenAIRequest(BaseModel):
+    model: str
+    input: str
+    voice: str = DEFAULT_VOICE
+    response_format: str = "mp3"
+    speed: float = 1.0
+
 @app.post("/v1/audio/speech")
-async def create_speech_api(request: SpeechRequest):
-    """
-    Generate speech from text using the Orpheus TTS model.
-    Compatible with OpenAI's /v1/audio/speech endpoint.
-    
-    For longer texts (>1000 characters), batched generation is used
-    to improve reliability and avoid truncation issues.
-    """
+async def openai_speech_endpoint(request: OpenAIRequest):
     if not request.input:
-        raise HTTPException(status_code=400, detail="Missing input text")
+        raise HTTPException(status_code=400, detail={"error": {"message": "Missing input text", "type": "invalid_request_error"}})
     
-    # Generate unique filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = f"outputs/{request.voice}_{timestamp}.wav"
+    adapter = OpenAIAdapter(core_engine=type('CoreEngineWrapper', (), {"generate_speech_from_api": generate_speech_from_api})())
     
-    # Check if we should use batched generation
-    use_batching = len(request.input) > 1000
-    if use_batching:
-        print(f"Using batched generation for long text ({len(request.input)} characters)")
+    try:
+        audio_data = adapter.generate(request.dict())
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(e), "type": "internal_error"}}
+        )
     
-    # Generate speech with automatic batching for long texts
-    start = time.time()
-    generate_speech_from_api(
-        prompt=request.input,
-        voice=request.voice,
-        output_file=output_path,
-        use_batching=use_batching,
-        max_batch_chars=1000  # Process in ~1000 character chunks (roughly 1 paragraph)
-    )
-    end = time.time()
-    generation_time = round(end - start, 2)
+    media_type = "audio/mpeg" if request.response_format == "mp3" else "audio/wav"
     
-    # Return audio file
-    return FileResponse(
-        path=output_path,
-        media_type="audio/wav",
-        filename=f"{request.voice}_{timestamp}.wav"
+    return Response(
+        content=audio_data,
+        media_type=media_type,
+        headers={"Content-Disposition": "inline"}
     )
 
 @app.get("/v1/audio/voices")
@@ -298,60 +347,6 @@ def get_current_config():
             config[key] = env_value
     
     return config
-
-@app.post("/web/", response_class=HTMLResponse)
-async def generate_from_web(
-    request: Request,
-    text: str = Form(...),
-    voice: str = Form(DEFAULT_VOICE)
-):
-    """Handle form submission from web UI"""
-    if not text:
-        return templates.TemplateResponse(
-            "tts.html",
-            {
-                "request": request,
-                "error": "Please enter some text.",
-                "voices": AVAILABLE_VOICES,
-                "VOICE_TO_LANGUAGE": VOICE_TO_LANGUAGE,
-                "AVAILABLE_LANGUAGES": AVAILABLE_LANGUAGES
-            }
-        )
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = f"outputs/{voice}_{timestamp}.wav"
-    
-    # Check if we should use batched generation for longer texts
-    use_batching = len(text) > 1000
-    if use_batching:
-        print(f"Using batched generation for long text from web form ({len(text)} characters)")
-    
-    # Generate speech with batching for longer texts
-    start = time.time()
-    generate_speech_from_api(
-        prompt=text, 
-        voice=voice, 
-        output_file=output_path,
-        use_batching=use_batching,
-        max_batch_chars=1000
-    )
-    end = time.time()
-    generation_time = round(end - start, 2)
-    
-    return templates.TemplateResponse(
-        "tts.html",
-        {
-            "request": request,
-            "success": True,
-            "text": text,
-            "voice": voice,
-            "output_file": output_path,
-            "generation_time": generation_time,
-            "voices": AVAILABLE_VOICES,
-            "VOICE_TO_LANGUAGE": VOICE_TO_LANGUAGE,
-            "AVAILABLE_LANGUAGES": AVAILABLE_LANGUAGES
-        }
-    )
 
 if __name__ == "__main__":
     import uvicorn
