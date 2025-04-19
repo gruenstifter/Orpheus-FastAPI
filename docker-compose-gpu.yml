@@ -21,6 +21,8 @@ services:
     depends_on:
       llama-cpp-server:
         condition: service_started
+    networks:
+      - coolify
 
   llama-cpp-server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -43,12 +45,14 @@ services:
     restart: unless-stopped
     command: >
       -m /models/${ORPHEUS_MODEL_NAME}
-      --port 5006 
-      --host 0.0.0.0 
+      --port 5006
+      --host 0.0.0.0
       --n-gpu-layers 29
       --ctx-size ${ORPHEUS_MAX_TOKENS}
       --n-predict ${ORPHEUS_MAX_TOKENS}
       --rope-scaling linear
+    networks:
+      - coolify
 
   model-init:
     image: curlimages/curl:latest
@@ -65,4 +69,9 @@ services:
         echo "Model file already exists"
       fi'
     restart: "no"
-    
+    networks:
+      - coolify
+networks:
+  coolify:
+    external: true
+
