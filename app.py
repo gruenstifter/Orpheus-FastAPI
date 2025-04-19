@@ -100,7 +100,8 @@ OPENAI_VOICE_MAP = {
 }
 
 def map_openai_voice(voice: str) -> str:
-    return OPENAI_VOICE_MAP.get(voice, DEFAULT_VOICE)
+    # Use 'jana' as default voice if not mapped
+    return OPENAI_VOICE_MAP.get(voice, "jana")
 
 class OpenAIAdapter:
     def __init__(self, core_engine):
@@ -111,20 +112,30 @@ class OpenAIAdapter:
         internal_voice = map_openai_voice(openai_params.get("voice", DEFAULT_VOICE))
         speed = openai_params.get("speed", 1.0)
         text = openai_params.get("input", "")
+        response_format = openai_params.get("response_format", "mp3")
+        streaming = openai_params.get("stream", False)
         
-        # Generate speech using the core engine
-        # We do not support streaming here, generate full audio first
-        # Output to a temporary WAV file and read bytes to return
         import tempfile
         import os
         from pydub import AudioSegment
         import io
+        import asyncio
+        from fastapi.responses import StreamingResponse
+        from tts_engine.inference import generate_tokens_from_api, tokens_decoder
         
+        if streaming and response_format == "wav":
+            # Streaming WAV audio chunks
+            async def audio_streamer():
+                token_gen = generate_tokens_from_api(prompt=text, voice=internal_voice)
+                async for audio_chunk in tokens_decoder(token_gen):
+                    yield audio_chunk
+            
+            return StreamingResponse(audio_streamer(), media_type="audio/wav")
+        
+        # Non-streaming path: generate full audio file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav_file:
             wav_path = tmp_wav_file.name
         
-        # Call the existing generate_speech_from_api with mapped voice and speed
-        # Note: speed parameter is not currently used in generate_speech_from_api, so we may ignore or extend later
         self.engine.generate_speech_from_api(
             prompt=text,
             voice=internal_voice,
@@ -133,8 +144,7 @@ class OpenAIAdapter:
             max_batch_chars=1000
         )
         
-        # If requested format is mp3, transcode wav to mp3 in memory
-        if openai_params.get("response_format") == "mp3":
+        if response_format == "mp3":
             audio = AudioSegment.from_wav(wav_path)
             mp3_io = io.BytesIO()
             audio.export(mp3_io, format="mp3")
@@ -143,7 +153,6 @@ class OpenAIAdapter:
             os.remove(wav_path)
             return audio_data
         else:
-            # Return wav bytes directly
             with open(wav_path, "rb") as f:
                 audio_data = f.read()
             os.remove(wav_path)
@@ -164,17 +173,21 @@ async def openai_speech_endpoint(request: OpenAIRequest):
     adapter = OpenAIAdapter(core_engine=type('CoreEngineWrapper', (), {"generate_speech_from_api": generate_speech_from_api})())
     
     try:
-        audio_data = adapter.generate(request.dict())
+        result = adapter.generate(request.dict())
     except Exception as e:
         return JSONResponse(
             status_code=500,
             content={"error": {"message": str(e), "type": "internal_error"}}
         )
     
+    # If streaming, result is a StreamingResponse, return it directly
+    if isinstance(result, StreamingResponse):
+        return result
+    
     media_type = "audio/mpeg" if request.response_format == "mp3" else "audio/wav"
     
     return Response(
-        content=audio_data,
+        content=result,
         media_type=media_type,
         headers={"Content-Disposition": "inline"}
     )
