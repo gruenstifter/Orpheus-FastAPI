@@ -6,8 +6,6 @@ services:
       dockerfile: Dockerfile.gpu
     ports:
       - "5005:5005"
-    env_file:
-      - .env
     environment:
       - ORPHEUS_API_URL=http://llama-cpp-server:5006/v1/completions
     deploy:
@@ -36,8 +34,6 @@ services:
       - "5006:5006"
     volumes:
       - ./models:/models
-    env_file:
-      - .env
     depends_on:
       model-init:
         condition: service_completed_successfully
