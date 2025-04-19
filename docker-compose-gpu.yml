@@ -16,12 +16,12 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5005"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:5005"]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#      start_period: 10s
     depends_on:
       llama-cpp-server:
         condition: service_started
@@ -45,12 +45,12 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#      start_period: 10s
     command: >
       -m /models/${ORPHEUS_MODEL_NAME}
       --port 5006
@@ -77,12 +77,12 @@ services:
         echo "Model file already exists"
       fi'
     restart: "no"
-    healthcheck:
-      test: ["CMD", "echo", "ok"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+#    healthcheck:
+#      test: ["CMD", "echo", "ok"]
+#      interval: 30s
+#      timeout: 10s
+#      retries: 3
+#      start_period: 10s
     networks:
       - coolify
 networks:
